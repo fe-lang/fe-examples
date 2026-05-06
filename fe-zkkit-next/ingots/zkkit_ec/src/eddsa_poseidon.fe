@@ -1,0 +1,46 @@
+/// EdDSA verification over Baby Jubjub with Poseidon-based message hashing.
+use std::evm::crypto::{addmod, mulmod}
+
+use super::baby_jubjub::{A, D, FIELD, Point, SUBORDER, add, base_point, mul_scalar}
+use zkkit_poseidon::poseidon::hash5
+
+pub struct Signature { pub r8: Point, pub s: u256 }
+
+fn in_curve_xy(_ x: u256, _ y: u256) -> bool {
+    let x2 = mulmod(x, x, FIELD)
+    let y2 = mulmod(y, y, FIELD)
+    let lhs = addmod(mulmod(A, x2, FIELD), y2, FIELD)
+    let rhs = addmod(1, mulmod(D, mulmod(x2, y2, FIELD), FIELD), FIELD)
+    lhs == rhs
+}
+
+pub fn verify(_ message: u256, _ pub_key: Point, _ signature: Signature) -> bool {
+    let r8x = signature.r8.x
+    let r8y = signature.r8.y
+    let ax = pub_key.x
+    let ay = pub_key.y
+
+    if !in_curve_xy(r8x, r8y) {
+        return false
+    }
+    if !in_curve_xy(ax, ay) {
+        return false
+    }
+    if signature.s >= SUBORDER {
+        return false
+    }
+
+    let hm = hash5(r8x, r8y, ax, ay, message)
+    let left = mul_scalar(base_point(), signature.s)
+    let hm_times_8 = mulmod(hm, 8, SUBORDER)
+    let h_pub = mul_scalar(Point { x: ax, y: ay }, hm_times_8)
+    let right = add(Point { x: r8x, y: r8y }, h_pub)
+
+    left.x == right.x && left.y == right.y
+}
+
+#[test]
+fn test_eddsa_rejects_invalid_public_key() {
+    let sig = Signature { r8: base_point(), s: 1 }
+    assert(verify(42, Point { x: 1, y: 1 }, sig) == false)
+}
