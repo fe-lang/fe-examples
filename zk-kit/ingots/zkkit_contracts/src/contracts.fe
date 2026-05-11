@@ -7,7 +7,7 @@ use std::abi::sol
 use std::evm::Evm
 
 use zkkit_ec::baby_jubjub::Point
-use zkkit_merkle::merkle::{KeccakHasher, PoseidonHasher}
+use zkkit_merkle::merkle::{Keccak256Hasher, Poseidon2Hasher}
 use zkkit_proofs::bn254
 
 fn point_from_array(_ point: [u256; 2]) -> Point {
@@ -22,6 +22,9 @@ fn g1_from_array(_ point: [u256; 2]) -> bn254::G1Point {
     bn254::G1Point { x: point[0], y: point[1] }
 }
 
+/// Convert `[[x_imag, x_real], [y_imag, y_real]]` into a BN254 G2 point.
+///
+/// This matches the EVM pairing precompile input ordering (EIP-197 / alt_bn128).
 fn g2_from_array(_ point: [[u256; 2]; 2]) -> bn254::G2Point {
     bn254::G2Point {
         x_imag: point[0][0],
@@ -356,7 +359,7 @@ pub contract ZkKitMerkle {
         ComputeLeanIMTRoot { leaf, index, siblings_len, siblings } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::lean_root_from_proof<KeccakHasher, 32>(
+            zkkit_merkle::merkle::lean_root_from_proof<Keccak256Hasher, 32>(
                 leaf,
                 index,
                 siblings_len,
@@ -367,7 +370,7 @@ pub contract ZkKitMerkle {
         VerifyLeanIMT { root, leaf, index, siblings_len, siblings } -> bool
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::lean_verify<KeccakHasher, 32>(
+            zkkit_merkle::merkle::lean_verify<Keccak256Hasher, 32>(
                 root,
                 leaf,
                 index,
@@ -386,7 +389,7 @@ pub contract ZkKitMerkle {
         } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::lean_update_root<KeccakHasher, 32>(
+            zkkit_merkle::merkle::lean_update_root<Keccak256Hasher, 32>(
                 current_root,
                 old_leaf,
                 new_leaf,
@@ -399,13 +402,13 @@ pub contract ZkKitMerkle {
         ComputeSMTRoot { leaf, index, enables, siblings } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::sparse_root<KeccakHasher, 32>(leaf, index, enables, siblings)
+            zkkit_merkle::merkle::sparse_root<Keccak256Hasher, 32>(leaf, index, enables, siblings)
         }
 
         VerifySMT { root, leaf, index, enables, siblings } -> bool
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::sparse_verify<KeccakHasher, 32>(
+            zkkit_merkle::merkle::sparse_verify<Keccak256Hasher, 32>(
                 root,
                 leaf,
                 index,
@@ -417,7 +420,7 @@ pub contract ZkKitMerkle {
         UpdateSMTRoot { current_root, old_leaf, new_leaf, index, enables, siblings } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::sparse_update_root<KeccakHasher, 32>(
+            zkkit_merkle::merkle::sparse_update_root<Keccak256Hasher, 32>(
                 current_root,
                 old_leaf,
                 new_leaf,
@@ -445,13 +448,13 @@ pub contract ZkKitMerkleProof {
         ComputeRoot { proof, proof_len, leaf } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::sorted_root<KeccakHasher, 32>(proof, proof_len, leaf)
+            zkkit_merkle::merkle::sorted_root<Keccak256Hasher, 32>(proof, proof_len, leaf)
         }
 
         Verify { proof, proof_len, root, leaf } -> bool
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::sorted_verify<KeccakHasher, 32>(proof, proof_len, root, leaf)
+            zkkit_merkle::merkle::sorted_verify<Keccak256Hasher, 32>(proof, proof_len, root, leaf)
         }
     }
 }
@@ -486,13 +489,13 @@ pub contract ZkKitPoseidonMerkle {
         ComputeRoot { leaf, path_index, siblings } -> u256
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::binary_root<PoseidonHasher, 32>(leaf, 32, path_index, siblings)
+            zkkit_merkle::merkle::binary_root<Poseidon2Hasher, 32>(leaf, 32, path_index, siblings)
         }
 
         Verify { leaf, path_index, siblings, root } -> bool
         uses (evm: mut Evm)
         {
-            zkkit_merkle::merkle::binary_verify<PoseidonHasher, 32>(
+            zkkit_merkle::merkle::binary_verify<Poseidon2Hasher, 32>(
                 root,
                 leaf,
                 32,
@@ -508,7 +511,7 @@ pub contract ZkKitPoseidonMerkle {
                 evm.revert(offset: 0, len: 0)
             }
 
-            zkkit_merkle::merkle::binary_root<PoseidonHasher, 32>(
+            zkkit_merkle::merkle::binary_root<Poseidon2Hasher, 32>(
                 leaf,
                 depth as usize,
                 path_index,
@@ -523,7 +526,7 @@ pub contract ZkKitPoseidonMerkle {
                 evm.revert(offset: 0, len: 0)
             }
 
-            zkkit_merkle::merkle::binary_verify<PoseidonHasher, 32>(
+            zkkit_merkle::merkle::binary_verify<Poseidon2Hasher, 32>(
                 root,
                 leaf,
                 depth as usize,
@@ -708,7 +711,7 @@ fn test_merkle_contract_lean_and_smt_roots() uses (evm: mut Evm) {
             },
         )
     assert(
-        lean_root == zkkit_merkle::merkle::KeccakHasher::hash2(7, 5),
+        lean_root == zkkit_merkle::merkle::Keccak256Hasher::hash2(7, 5),
     )
 
     let smt_root: u256 = evm
@@ -733,7 +736,7 @@ fn test_merkle_proof_contract_sorted_root() uses (evm: mut Evm) {
             value: 0,
             message: ZkKitMerkleProofMsg::ComputeRoot { proof, proof_len: 1, leaf: 5 },
         )
-    assert(root == zkkit_merkle::merkle::KeccakHasher::hash2(3, 5))
+    assert(root == zkkit_merkle::merkle::Keccak256Hasher::hash2(3, 5))
 }
 
 #[test]

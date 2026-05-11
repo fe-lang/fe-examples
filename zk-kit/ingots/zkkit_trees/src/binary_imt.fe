@@ -40,15 +40,18 @@ impl IMTError {
     }
 }
 
-/// Small view of an IMT configuration and current root.
-pub struct IMT { pub depth: usize, pub root: u256 }
+/// Stateless verifier for binary Poseidon IMT proofs.
+pub struct BinaryIMTVerifier { pub depth: usize, pub root: u256 }
 
-impl Copy for IMT {}
+/// Backwards-compatibility alias for older callers.
+pub type IMT = BinaryIMTVerifier
 
-impl IMT {
+impl Copy for BinaryIMTVerifier {}
+
+impl BinaryIMTVerifier {
     pub fn new(_ depth: usize, _ root: u256) -> Self {
         assert(depth > 0 && depth <= MAX_DEPTH)
-        IMT { depth: depth, root: root }
+        BinaryIMTVerifier { depth: depth, root: root }
     }
     pub fn calculate_root(
         self,
@@ -132,26 +135,39 @@ pub struct Subtree { pub left: u256, pub right: u256 }
 
 impl Copy for Subtree {}
 
-pub struct BinaryIMTData {
+/// Stateful binary IMT with incremental insert/update/remove operations.
+pub struct BinaryIMT {
     pub depth: usize,
     pub root: u256,
     pub number_of_leaves: usize,
     pub zeroes: [u256; MAX_DEPTH],
     pub last_subtrees: [Subtree; MAX_DEPTH],
-    pub use_default_zeroes: bool,
+    /// When non-zero, `zero_at` derives per-level zeroes on the fly.
+    ///
+    /// This is stored as a full-word `u256` (rather than `bool`) to avoid
+    /// known issues with sub-word fields in memory structs on some Fe
+    /// toolchains.
+    pub use_default_zeroes: u256,
 }
 
-impl BinaryIMTData {
+/// Backwards-compatibility alias for older callers.
+pub type BinaryIMTData = BinaryIMT
+
+impl BinaryIMT {
     pub fn empty() -> Self {
-        BinaryIMTData {
+        BinaryIMT {
             depth: 0,
             root: 0,
             number_of_leaves: 0,
             zeroes: [0; MAX_DEPTH],
             last_subtrees: [Subtree { left: 0, right: 0 }; MAX_DEPTH],
-            use_default_zeroes: false,
+            use_default_zeroes: 0,
         }
     }
+    /// Compute the canonical "empty subtree root" at `index`.
+    ///
+    /// This starts from `0` at the leaf level and repeatedly hashes pairs
+    /// upward: `z_{i+1} = hash2(z_i, z_i)`.
     pub fn default_zero(_ index: usize) -> u256 {
         assert(index <= MAX_DEPTH)
 
@@ -177,7 +193,7 @@ impl BinaryIMTData {
         self.depth = depth
         self.root = 0
         self.number_of_leaves = 0
-        self.use_default_zeroes = false
+        self.use_default_zeroes = 0
         self.zeroes = [0; MAX_DEPTH]
         self.last_subtrees = [Subtree { left: 0, right: 0 }; MAX_DEPTH]
 
@@ -200,9 +216,9 @@ impl BinaryIMTData {
         }
 
         self.depth = depth
-        self.root = BinaryIMTData::default_zero(depth)
+        self.root = BinaryIMT::default_zero(depth)
         self.number_of_leaves = 0
-        self.use_default_zeroes = true
+        self.use_default_zeroes = 1
         self.zeroes = [0; MAX_DEPTH]
         self.last_subtrees = [Subtree { left: 0, right: 0 }; MAX_DEPTH]
 
@@ -210,8 +226,8 @@ impl BinaryIMTData {
     }
 
     fn zero_at(self, _ level: usize) -> u256 {
-        if self.use_default_zeroes {
-            BinaryIMTData::default_zero(level)
+        if self.use_default_zeroes != 0 {
+            BinaryIMT::default_zero(level)
         } else {
             self.zeroes[level]
         }
@@ -324,7 +340,7 @@ impl BinaryIMTData {
         _ siblings: [u256; MAX_DEPTH],
         _ indices: [u8; MAX_DEPTH],
     ) -> IMTError {
-        let replacement = if self.use_default_zeroes {
+        let replacement = if self.use_default_zeroes != 0 {
             0
         } else {
             self.zeroes[0]
@@ -552,7 +568,7 @@ fn test_new_rejects_depth_33() {
 
 #[test]
 fn test_stateful_init_validation() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
 
     let err = tree.init(0, 0)
     assert(err.code() == IMTError::DepthNotSupported.code())
@@ -568,19 +584,19 @@ fn test_stateful_init_validation() {
 
 #[test]
 fn test_stateful_init_with_default_zeroes() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init_with_default_zeroes(3)
 
     assert(err.code() == IMTError::None.code())
-    assert(tree.use_default_zeroes)
+    assert(tree.use_default_zeroes != 0)
     assert(tree.depth == 3)
     assert(tree.number_of_leaves == 0)
-    assert(tree.root == BinaryIMTData::default_zero(3))
+    assert(tree.root == BinaryIMT::default_zero(3))
 }
 
 #[test]
 fn test_stateful_insert_and_tree_full() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(1, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -598,8 +614,8 @@ fn test_stateful_insert_and_tree_full() {
 
 #[test]
 fn test_stateful_insert_matches_default_zeroes_mode() {
-    let mut a = BinaryIMTData::empty()
-    let mut b = BinaryIMTData::empty()
+    let mut a = BinaryIMT::empty()
+    let mut b = BinaryIMT::empty()
 
     let err = a.init_with_default_zeroes(3)
     assert(err.code() == IMTError::None.code())
@@ -616,7 +632,7 @@ fn test_stateful_insert_matches_default_zeroes_mode() {
 
 #[test]
 fn test_stateful_insert_four_leaves_matches_depth2_root() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -636,7 +652,7 @@ fn test_stateful_insert_four_leaves_matches_depth2_root() {
 
 #[test]
 fn test_stateful_update_and_remove_roundtrip() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -667,7 +683,7 @@ fn test_stateful_update_and_remove_roundtrip() {
 
 #[test]
 fn test_stateful_update_error_cases() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(1, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -699,7 +715,7 @@ fn test_stateful_update_error_cases() {
 
 #[test]
 fn test_stateful_leaf_index_out_of_range() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(3, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -730,7 +746,7 @@ fn test_stateful_leaf_index_out_of_range() {
 
 #[test]
 fn test_stateful_remove_uses_custom_zero_when_not_default() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 5)
     assert(err.code() == IMTError::None.code())
 
@@ -753,7 +769,7 @@ fn test_stateful_remove_uses_custom_zero_when_not_default() {
 
 #[test]
 fn test_stateful_remove_error_cases() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(1, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -774,14 +790,14 @@ fn test_stateful_remove_error_cases() {
 
 #[test]
 fn test_stateful_remove_in_default_zeroes_mode_and_reinsert() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init_with_default_zeroes(2)
     assert(err.code() == IMTError::None.code())
 
     let (_root, err) = tree.insert(1)
     assert(err.code() == IMTError::None.code())
 
-    let z1 = BinaryIMTData::default_zero(1)
+    let z1 = BinaryIMT::default_zero(1)
 
     let mut remove_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
     remove_siblings[1] = z1
@@ -789,7 +805,7 @@ fn test_stateful_remove_in_default_zeroes_mode_and_reinsert() {
 
     let err = tree.remove(1, remove_siblings, remove_indices)
     assert(err.code() == IMTError::None.code())
-    assert(tree.root == BinaryIMTData::default_zero(2))
+    assert(tree.root == BinaryIMT::default_zero(2))
 
     let (_root, err) = tree.insert(2)
     assert(err.code() == IMTError::None.code())
@@ -808,7 +824,7 @@ fn test_stateful_remove_in_default_zeroes_mode_and_reinsert() {
 
 #[test]
 fn test_stateful_insert_four_leaves_and_remove_them_all() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -839,28 +855,28 @@ fn test_stateful_insert_four_leaves_and_remove_them_all() {
 
 #[test]
 fn test_poseidon_default_zero_constants_match_solidity() {
-    assert(BinaryIMTData::default_zero(0) == 0)
+    assert(BinaryIMT::default_zero(0) == 0)
     assert(
-        BinaryIMTData::default_zero(1)
+        BinaryIMT::default_zero(1)
             == 14744269619966411208579211824598458697587494354926760081771325075741142829156,
     )
     assert(
-        BinaryIMTData::default_zero(2)
+        BinaryIMT::default_zero(2)
             == 7423237065226347324353380772367382631490014989348495481811164164159255474657,
     )
     assert(
-        BinaryIMTData::default_zero(3)
+        BinaryIMT::default_zero(3)
             == 11286972368698509976183087595462810875513684078608517520839298933882497716792,
     )
     assert(
-        BinaryIMTData::default_zero(32)
+        BinaryIMT::default_zero(32)
             == 21443572485391568159800782191812935835534334817699172242223315142338162256601,
     )
 }
 
 #[test]
 fn test_poseidon_vector_depth2_zero0() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 0)
     assert(err.code() == IMTError::None.code())
 
@@ -916,7 +932,7 @@ fn test_poseidon_vector_depth2_zero0() {
 
 #[test]
 fn test_poseidon_vector_depth2_zero5() {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init(2, 5)
     assert(err.code() == IMTError::None.code())
 

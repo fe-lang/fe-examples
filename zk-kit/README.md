@@ -1,4 +1,4 @@
-# fe-zkkit-next
+# zk-kit
 
 A canonical Fe implementation of zk-kit primitives for EVM use.
 
@@ -15,7 +15,7 @@ use Solidity selectors and ABI shapes where there is an existing Solidity benchm
 ## Workspace
 
 ```text
-fe-zkkit-next/
+zk-kit/
   fe.toml
   ingots/
     zkkit_core/
@@ -30,7 +30,7 @@ fe-zkkit-next/
 
 ## Public Contracts
 
-`fe build fe-zkkit-next` emits:
+`fe build zk-kit` emits:
 
 - `ZkKitPoseidon`
   - `hash2(uint256,uint256)`
@@ -85,23 +85,23 @@ Note: Solidity/TypeScript parity harnesses live on the `extra` branch.
 Fast compatibility gate:
 
 ```sh
-fe check fe-zkkit-next
+fe check zk-kit
 ```
 
 Build deployable contract artifacts:
 
 ```sh
-fe build fe-zkkit-next
+fe build zk-kit
 ```
 
 Targeted Fe test examples:
 
 ```sh
-fe test --grouped -O0 fe-zkkit-next/ingots/zkkit_poseidon
-fe test --grouped -O0 fe-zkkit-next/ingots/zkkit_merkle
-fe test --grouped -O0 fe-zkkit-next/ingots/zkkit_trees
-fe test --grouped -O0 fe-zkkit-next/ingots/zkkit_ec
-fe test --grouped -O0 fe-zkkit-next/ingots/zkkit_contracts
+fe test --grouped -O0 zk-kit/ingots/zkkit_poseidon
+fe test --grouped -O0 zk-kit/ingots/zkkit_merkle
+fe test --grouped -O0 zk-kit/ingots/zkkit_trees
+fe test --grouped -O0 zk-kit/ingots/zkkit_ec
+fe test --grouped -O0 zk-kit/ingots/zkkit_contracts
 ```
 
 The workspace is split into smaller ingots so you can run `fe test` per subsystem. Whole-workspace `fe test` is still

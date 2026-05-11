@@ -1,10 +1,18 @@
 /// Stateful LeanIMT implementation (Poseidon-based) with fixed-capacity leaf map.
+///
+/// Notes:
+/// - The tree state tracks `side_nodes` (one per level) to support incremental
+///   inserts without recomputing the whole tree.
+/// - Leaf membership is tracked via a small fixed-capacity open-addressed map
+///   keyed by `leaf`. The stored value is a 1-based leaf index.
+/// - Map occupancy flags are stored as `u256` words (instead of `u8`) to avoid
+///   sub-word fields in memory structs on some Fe toolchains.
 use std::evm::effects::assert
 
 use zkkit_core::common::{MAX_DEPTH, SNARK_SCALAR_FIELD}
 use zkkit_poseidon::poseidon::hash2
 
-const MAX_DEPTH_PLUS_ONE: usize = 33
+const MAX_DEPTH_PLUS_ONE: usize = MAX_DEPTH + 1
 const LEAN_MAP_CAPACITY: usize = 256
 const LEAN_MAP_CAPACITY_U256: u256 = 256
 const LEAN_BATCH_MAX: usize = 64
@@ -41,18 +49,26 @@ impl LeanIMTError {
     }
 }
 
-pub struct LeanIMTData {
+/// Stateful LeanIMT implementation (Poseidon-based).
+pub struct LeanIMT {
     pub size: usize,
     pub depth: usize,
     pub side_nodes: [u256; MAX_DEPTH_PLUS_ONE],
-    pub leaf_used: [u8; LEAN_MAP_CAPACITY],
+    /// Occupancy flags for the open-addressed leaf map.
+    ///
+    /// This is intentionally `u256` rather than `u8` to avoid sub-word fields in
+    /// memory structs on some Fe toolchains.
+    pub leaf_used: [u256; LEAN_MAP_CAPACITY],
     pub leaf_keys: [u256; LEAN_MAP_CAPACITY],
     pub leaf_values: [u256; LEAN_MAP_CAPACITY],
 }
 
-impl LeanIMTData {
+/// Backwards-compatibility alias for older callers.
+pub type LeanIMTData = LeanIMT
+
+impl LeanIMT {
     pub fn empty() -> Self {
-        LeanIMTData {
+        LeanIMT {
             size: 0,
             depth: 0,
             side_nodes: [0; MAX_DEPTH_PLUS_ONE],
@@ -109,6 +125,9 @@ impl LeanIMTData {
                 return LeanIMTError::None
             }
 
+            // A slot with `used=1` but `value=0` is a tombstone. Keep searching
+            // for an exact key match, but remember the first tombstone so we
+            // can reuse it if we end up inserting a new key.
             if self.leaf_values[slot] == 0 && first_tombstone == LEAN_MAP_CAPACITY {
                 first_tombstone = slot
             }
@@ -131,6 +150,8 @@ impl LeanIMTData {
     }
 
     fn leaf_delete(mut self, _ leaf: u256) {
+        // Deletion leaves `leaf_used=1` intact (tombstone) so probe sequences
+        // for other keys remain valid.
         let mut slot = (leaf % LEAN_MAP_CAPACITY_U256) as usize
         let mut i: usize = 0
 
@@ -446,7 +467,7 @@ fn lean_proof_from_slots(
 
 #[test]
 fn test_lean_insert_has_index_and_root() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
 
     let (_root, err) = tree.insert(1)
     assert(err.code() == LeanIMTError::None.code())
@@ -464,7 +485,7 @@ fn test_lean_insert_has_index_and_root() {
 
 #[test]
 fn test_lean_insert_many_update_remove_roundtrip() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
     batch[0] = 1
     batch[1] = 2
@@ -493,7 +514,7 @@ fn test_lean_insert_many_update_remove_roundtrip() {
 #[test]
 fn test_lean_insert_many_error_cases() {
     let mut too_many: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
 
     let (_root, err) = tree.insert_many(too_many, LEAN_BATCH_MAX + 1)
     assert(err.code() == LeanIMTError::DepthNotSupported.code())
@@ -527,7 +548,7 @@ fn test_lean_insert_many_error_cases() {
 
 #[test]
 fn test_lean_insert_many_when_tree_is_not_empty() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
 
     let (_root, err) = tree.insert(1)
     assert(err.code() == LeanIMTError::None.code())
@@ -548,7 +569,7 @@ fn test_lean_insert_many_when_tree_is_not_empty() {
 
 #[test]
 fn test_lean_update_rejects_existing_and_removed_leaves() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
     batch[0] = 1
     batch[1] = 2
@@ -573,7 +594,7 @@ fn test_lean_update_rejects_existing_and_removed_leaves() {
 
 #[test]
 fn test_lean_error_cases() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let (_root, err) = tree.insert(0)
     assert(err.code() == LeanIMTError::LeafCannotBeZero.code())
     let (_root, err) = tree.insert(SNARK_SCALAR_FIELD)
@@ -599,7 +620,7 @@ fn test_lean_error_cases() {
 
 #[test]
 fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let (_root, err) = tree.insert(1)
     assert(err.code() == LeanIMTError::None.code())
 
@@ -608,7 +629,7 @@ fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
     assert(err.code() == LeanIMTError::None.code())
     assert(tree.root() == 2)
 
-    let mut even_tree = LeanIMTData::empty()
+    let mut even_tree = LeanIMT::empty()
     let (_root, err) = even_tree.insert(1)
     assert(err.code() == LeanIMTError::None.code())
     let (_root, err) = even_tree.insert(2)
@@ -621,7 +642,7 @@ fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
         err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
     )
 
-    let mut odd_tree = LeanIMTData::empty()
+    let mut odd_tree = LeanIMT::empty()
     let (_root, err) = odd_tree.insert(1)
     assert(err.code() == LeanIMTError::None.code())
     let (_root, err) = odd_tree.insert(2)
@@ -637,7 +658,7 @@ fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
 
 #[test]
 fn test_lean_updates_track_reference_roots() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
     let slot_count = 6
 
@@ -666,7 +687,7 @@ fn test_lean_updates_track_reference_roots() {
 
 #[test]
 fn test_lean_state_stays_consistent_after_updates_and_inserts() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
     let mut slot_count = 5
 
@@ -705,7 +726,7 @@ fn test_lean_state_stays_consistent_after_updates_and_inserts() {
 
 #[test]
 fn test_lean_remove_many_tracks_reference_roots() {
-    let mut tree = LeanIMTData::empty()
+    let mut tree = LeanIMT::empty()
     let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
     let slot_count = 10
 

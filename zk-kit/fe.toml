@@ -1,6 +1,6 @@
 # Workspace config
 [workspace]
-name = "fe-zkkit-next"
+name = "zk-kit"
 version = "0.1.0"
 
 # Members can be a flat array or a table with main/dev groups.

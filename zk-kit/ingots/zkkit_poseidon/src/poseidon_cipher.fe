@@ -6,7 +6,8 @@ use std::evm::crypto::addmod
 use super::poseidon_t4::permute4
 use super::poseidon_t4_constants::PRIME
 
-const SHIFT_128: u256 = 340282366920938463463374607431768211456
+/// `2^128`, used to domain-separate the sponge state from the raw `nonce`.
+const TWO_POW_128: u256 = 340282366920938463463374607431768211456
 
 /// Encrypt a single 3-word plaintext block.
 ///
@@ -17,7 +18,7 @@ pub fn encrypt_block(
     _ key_y: u256,
     _ nonce: u256,
 ) -> [u256; 4] {
-    let state3_init = addmod(nonce, 3 * SHIFT_128, PRIME)
+    let state3_init = addmod(nonce, 3 * TWO_POW_128, PRIME)
     let first = permute4(0, key_x, key_y, state3_init)
     let c0 = addmod(first.1, plaintext[0], PRIME)
     let c1 = addmod(first.2, plaintext[1], PRIME)
@@ -35,7 +36,7 @@ pub fn decrypt_block(
     _ key_y: u256,
     _ nonce: u256,
 ) -> [u256; 3] {
-    let state3_init = addmod(nonce, 3 * SHIFT_128, PRIME)
+    let state3_init = addmod(nonce, 3 * TWO_POW_128, PRIME)
     let first = permute4(0, key_x, key_y, state3_init)
     let m0 = addmod(ciphertext[0], PRIME - first.1, PRIME)
     let m1 = addmod(ciphertext[1], PRIME - first.2, PRIME)

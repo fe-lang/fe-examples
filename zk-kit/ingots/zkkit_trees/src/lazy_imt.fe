@@ -1,13 +1,24 @@
 /// Lazy (sparse) Poseidon IMT implementation.
+///
+/// This mirrors zk-kit’s "LazyIMT" behavior using a fixed-capacity sparse map
+/// for internal nodes rather than storing a dense tree. The map key is derived
+/// from `(level, index)` so the structure can be updated incrementally.
+///
+/// Map occupancy flags are stored as `u256` words (instead of `u8`) to avoid
+/// sub-word fields in memory structs on some Fe toolchains.
 use std::evm::effects::assert
 
-use super::binary_imt::{BinaryIMTData, IMTError}
+use super::binary_imt::{BinaryIMT, IMTError}
 use zkkit_core::common::{MAX_DEPTH, SNARK_SCALAR_FIELD}
 use zkkit_poseidon::poseidon::hash2
 
-const MAX_DEPTH_PLUS_ONE: usize = 33
+const MAX_DEPTH_PLUS_ONE: usize = MAX_DEPTH + 1
 const LAZY_MAP_CAPACITY: usize = 256
 const LAZY_MAP_CAPACITY_U256: u256 = 256
+/// Maximum index value used when constructing sparse keys (`2^32 - 1`).
+///
+/// The key construction uses `level * LAZY_MAX_INDEX + index`, which is
+/// collision-free as long as `index < LAZY_MAX_INDEX`.
 const LAZY_MAX_INDEX: u256 = 4294967295
 
 pub enum LazyIMTError {
@@ -48,17 +59,25 @@ impl LazyIMTError {
     }
 }
 
-pub struct LazyIMTData {
+/// Lazy (sparse) Poseidon IMT implementation backed by a fixed-capacity sparse map.
+pub struct LazyIMT {
     pub max_index: usize,
     pub number_of_leaves: usize,
-    pub element_used: [u8; LAZY_MAP_CAPACITY],
+    /// Occupancy flags for the open-addressed sparse node map.
+    ///
+    /// This is intentionally `u256` rather than `u8` to avoid sub-word fields in
+    /// memory structs on some Fe toolchains.
+    pub element_used: [u256; LAZY_MAP_CAPACITY],
     pub element_keys: [u256; LAZY_MAP_CAPACITY],
     pub element_values: [u256; LAZY_MAP_CAPACITY],
 }
 
-impl LazyIMTData {
+/// Backwards-compatibility alias for older callers.
+pub type LazyIMTData = LazyIMT
+
+impl LazyIMT {
     pub fn empty() -> Self {
-        LazyIMTData {
+        LazyIMT {
             max_index: 0,
             number_of_leaves: 0,
             element_used: [0; LAZY_MAP_CAPACITY],
@@ -71,7 +90,7 @@ impl LazyIMTData {
             return (0, LazyIMTError::DefaultZeroBadIndex)
         }
 
-        (BinaryIMTData::default_zero(index), LazyIMTError::None)
+        (BinaryIMT::default_zero(index), LazyIMTError::None)
     }
     pub fn init(mut self, _ depth: usize) -> LazyIMTError {
         if depth > MAX_DEPTH {
@@ -94,11 +113,13 @@ impl LazyIMTData {
         self.number_of_leaves = 0
     }
     pub fn index_for_element(_ level: usize, _ index: usize) -> u256 {
+        // Note: this assumes `index < LAZY_MAX_INDEX` so `(level, index)` pairs
+        // map to unique keys.
         (level as u256) * LAZY_MAX_INDEX + (index as u256)
     }
 
     fn element_get(self, _ level: usize, _ index: usize) -> (bool, u256) {
-        let key = LazyIMTData::index_for_element(level, index)
+        let key = LazyIMT::index_for_element(level, index)
         let mut slot = (key % LAZY_MAP_CAPACITY_U256) as usize
         let mut i: usize = 0
 
@@ -122,7 +143,7 @@ impl LazyIMTData {
     }
 
     fn element_set(mut self, _ level: usize, _ index: usize, _ value: u256) -> LazyIMTError {
-        let key = LazyIMTData::index_for_element(level, index)
+        let key = LazyIMT::index_for_element(level, index)
         let mut slot = (key % LAZY_MAP_CAPACITY_U256) as usize
         let mut i: usize = 0
 
@@ -246,13 +267,13 @@ impl LazyIMTData {
             let (ok, value) = self.element_get(0, index)
             if ok { levels[0] = value }
         } else {
-            levels[0] = BinaryIMTData::default_zero(0)
+            levels[0] = BinaryIMT::default_zero(0)
         }
 
         let mut i: usize = 0
         while i < depth {
             if index & 1 == 0 {
-                levels[i + 1] = hash2(levels[i], BinaryIMTData::default_zero(i))
+                levels[i + 1] = hash2(levels[i], BinaryIMT::default_zero(i))
             } else {
                 let level_count = number_of_leaves >> (i + 1)
                 if level_count > (index >> 1) {
@@ -260,14 +281,14 @@ impl LazyIMTData {
                     if ok {
                         levels[i + 1] = parent
                     } else {
-                        levels[i + 1] = BinaryIMTData::default_zero(i + 1)
+                        levels[i + 1] = BinaryIMT::default_zero(i + 1)
                     }
                 } else {
                     let (ok, sibling) = self.element_get(i, index - 1)
                     if ok {
                         levels[i + 1] = hash2(sibling, levels[i])
                     } else {
-                        levels[i + 1] = hash2(BinaryIMTData::default_zero(i), levels[i])
+                        levels[i + 1] = hash2(BinaryIMT::default_zero(i), levels[i])
                     }
                 }
             }
@@ -285,7 +306,7 @@ impl LazyIMTData {
         }
 
         if number_of_leaves == 0 {
-            return (BinaryIMTData::default_zero(depth), LazyIMTError::None)
+            return (BinaryIMT::default_zero(depth), LazyIMTError::None)
         }
 
         let (levels, err) = self.levels_for_root(number_of_leaves, depth)
@@ -359,7 +380,7 @@ impl LazyIMTData {
 
         if index & 1 == 0 {
             if index + 1 >= number_of_leaves {
-                elements[0] = BinaryIMTData::default_zero(0)
+                elements[0] = BinaryIMT::default_zero(0)
             } else {
                 let (ok, sibling) = self.element_get(0, index + 1)
                 if ok {
@@ -385,7 +406,7 @@ impl LazyIMTData {
                         elements[i] = sibling
                     }
                 } else if ((number_of_leaves - 1) >> i) <= index {
-                    elements[i] = BinaryIMTData::default_zero(i)
+                    elements[i] = BinaryIMT::default_zero(i)
                 }
             } else {
                 let (ok, sibling) = self.element_get(i, index - 1)
@@ -409,7 +430,7 @@ fn binary_root_from_dense_leaves(
     _ leaves: [u256; LAZY_TEST_MAX_DENSE_LEAVES],
     _ leaf_count: usize,
 ) -> u256 {
-    let mut tree = BinaryIMTData::empty()
+    let mut tree = BinaryIMT::empty()
     let err = tree.init_with_default_zeroes(depth)
     assert(err.code() == IMTError::None.code())
 
@@ -444,7 +465,7 @@ fn binary_proof_from_dense_leaves(
     let mut level: usize = 0
     while level < depth {
         if current_count <= 1 {
-            proof[level] = BinaryIMTData::default_zero(level)
+            proof[level] = BinaryIMT::default_zero(level)
         } else {
             let sibling_index = if (current_index & 1) == 0 {
                 current_index + 1
@@ -454,14 +475,14 @@ fn binary_proof_from_dense_leaves(
             if sibling_index < current_count {
                 proof[level] = current[sibling_index]
             } else {
-                proof[level] = BinaryIMTData::default_zero(level)
+                proof[level] = BinaryIMT::default_zero(level)
             }
 
             let mut next_count: usize = 0
             let mut pair_index: usize = 0
             while pair_index < current_count {
                 let left = current[pair_index]
-                let mut right = BinaryIMTData::default_zero(level)
+                let mut right = BinaryIMT::default_zero(level)
                 if pair_index + 1 < current_count {
                     right = current[pair_index + 1]
                 }
@@ -522,7 +543,7 @@ fn lazy_calculate_root(
 }
 
 fn assert_lazy_merkle_proof_case(_ depth: usize, _ leaf_count: usize) {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(depth)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -558,7 +579,7 @@ fn assert_lazy_merkle_proof_case(_ depth: usize, _ leaf_count: usize) {
 }
 
 fn assert_lazy_merkle_proof_sampled_case(_ depth: usize, _ leaf_count: usize) {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(depth)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -590,31 +611,31 @@ fn assert_lazy_merkle_proof_sampled_case(_ depth: usize, _ leaf_count: usize) {
 
 #[test]
 fn test_lazy_default_zero_and_init() {
-    let (z0, err) = LazyIMTData::default_zero(0)
+    let (z0, err) = LazyIMT::default_zero(0)
     assert(err.code() == LazyIMTError::None.code())
     assert(z0 == 0)
 
-    let (z2, err) = LazyIMTData::default_zero(2)
+    let (z2, err) = LazyIMT::default_zero(2)
     assert(err.code() == LazyIMTError::None.code())
-    assert(z2 == BinaryIMTData::default_zero(2))
+    assert(z2 == BinaryIMT::default_zero(2))
 
-    let (_z, err) = LazyIMTData::default_zero(33)
+    let (_z, err) = LazyIMT::default_zero(33)
     assert(err.code() == LazyIMTError::DefaultZeroBadIndex.code())
 
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(10)
     assert(err.code() == LazyIMTError::None.code())
     assert(tree.max_index == 1023)
     assert(tree.number_of_leaves == 0)
 
-    let mut too_big = LazyIMTData::empty()
+    let mut too_big = LazyIMT::empty()
     let err = too_big.init(33)
     assert(err.code() == LazyIMTError::TreeTooLarge.code())
 }
 
 #[test]
 fn test_lazy_insert_update_reset_and_roots() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(4)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -648,7 +669,7 @@ fn test_lazy_insert_update_reset_and_roots() {
 
 #[test]
 fn test_lazy_error_cases() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(3)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -672,7 +693,7 @@ fn test_lazy_error_cases() {
 
 #[test]
 fn test_lazy_reset_reuses_tree() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(3)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -702,7 +723,7 @@ fn test_lazy_reset_reuses_tree() {
 
 #[test]
 fn test_lazy_insert_allows_last_leaf_slot() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(1)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -719,7 +740,7 @@ fn test_lazy_insert_allows_last_leaf_slot() {
     let err = tree.insert(33)
     assert(err.code() == LazyIMTError::TreeIsFull.code())
 
-    let mut single = LazyIMTData::empty()
+    let mut single = LazyIMT::empty()
     let err = single.init(0)
     assert(err.code() == LazyIMTError::None.code())
     let err = single.insert(7)
@@ -731,7 +752,7 @@ fn test_lazy_insert_allows_last_leaf_slot() {
 
 #[test]
 fn test_lazy_proof_and_depth_errors() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -767,7 +788,7 @@ fn test_lazy_proof_and_depth_errors() {
 
 #[test]
 fn test_lazy_root_at_depth_matches_root() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -791,7 +812,7 @@ fn test_lazy_root_at_depth_matches_root() {
 
 #[test]
 fn test_lazy_merkle_proof_matches_root() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -816,7 +837,7 @@ fn test_lazy_merkle_proof_matches_root() {
 
 #[test]
 fn test_lazy_merkle_proof_returns_no_error() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -837,7 +858,7 @@ fn test_lazy_merkle_proof_returns_no_error() {
 
 #[test]
 fn test_lazy_merkle_proof_element_0() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -859,7 +880,7 @@ fn test_lazy_merkle_proof_element_0() {
 
 #[test]
 fn test_lazy_merkle_proof_element_1() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -876,12 +897,12 @@ fn test_lazy_merkle_proof_element_1() {
 
     let (proof, err) = tree.merkle_proof_elements(4, 3)
     assert(err.code() == LazyIMTError::None.code())
-    assert(proof[1] == BinaryIMTData::default_zero(1))
+    assert(proof[1] == BinaryIMT::default_zero(1))
 }
 
 #[test]
 fn test_lazy_merkle_proof_element_2() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(6)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -910,7 +931,7 @@ fn test_lazy_insert_matches_binary_reference_across_depths() {
     while depth_idx < 3 {
         let depth = depths[depth_idx]
         let target_insert_count = insert_counts[depth_idx]
-        let mut tree = LazyIMTData::empty()
+        let mut tree = LazyIMT::empty()
         let err = tree.init(depth)
         assert(err.code() == LazyIMTError::None.code())
 
@@ -949,7 +970,7 @@ fn test_lazy_insert_matches_binary_reference_across_depths() {
 
 #[test]
 fn test_lazy_insert_matches_binary_reference_depth_32_boundary() {
-    let mut tree = LazyIMTData::empty()
+    let mut tree = LazyIMT::empty()
     let err = tree.init(32)
     assert(err.code() == LazyIMTError::None.code())
 
@@ -973,7 +994,7 @@ fn test_lazy_updates_match_binary_reference_across_depths() {
 
     while depth_idx < 3 {
         let depth = depths[depth_idx]
-        let mut tree = LazyIMTData::empty()
+        let mut tree = LazyIMT::empty()
         let err = tree.init(depth)
         assert(err.code() == LazyIMTError::None.code())
 

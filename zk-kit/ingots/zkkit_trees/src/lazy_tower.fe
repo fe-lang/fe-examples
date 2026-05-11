@@ -30,17 +30,27 @@ impl LazyTowerError {
     }
 }
 
-pub struct LazyTowerHashChainData {
+/// Stateful LazyTower hash-chain state.
+pub struct LazyTower {
+    /// Packed per-level item counts (4 bits per level, little-endian nibbles).
+    ///
+    /// Level `i` stores its length in bits `[4*i .. 4*i+3]` and the length is
+    /// always in `[0, 4]`.
     pub level_lengths: u256,
+    /// Per-level hash digests (`hash_chain4` of the current level items).
     pub digests: [u256; LAZY_TOWER_HEIGHT],
+    /// Running hash of `digests` from the top down.
     pub digest_of_digests: [u256; LAZY_TOWER_HEIGHT],
     level_counts: [usize; LAZY_TOWER_HEIGHT],
     level_items: [u256; LAZY_TOWER_HEIGHT * 4],
 }
 
-impl LazyTowerHashChainData {
+/// Backwards-compatibility alias for older callers.
+pub type LazyTowerHashChainData = LazyTower
+
+impl LazyTower {
     pub fn empty() -> Self {
-        LazyTowerHashChainData {
+        LazyTower {
             level_lengths: 0,
             digests: [0; LAZY_TOWER_HEIGHT],
             digest_of_digests: [0; LAZY_TOWER_HEIGHT],
@@ -49,6 +59,12 @@ impl LazyTowerHashChainData {
         }
     }
 
+    /// Find the lowest level with remaining capacity and increment its length.
+    ///
+    /// Returns `(level, is_head, is_top, new_level_lengths)` where:
+    /// - `level` is the level that will accept the next carried item.
+    /// - `is_head` is `true` iff that level was empty before incrementing.
+    /// - `is_top` is `true` iff there are no non-zero levels above it.
     fn find_lowest_non_full_level_then_inc(_ level_lengths: u256) -> (usize, bool, bool, u256) {
         let mut level: usize = 0
         let mut shifted = level_lengths
@@ -78,12 +94,9 @@ impl LazyTowerHashChainData {
             return LazyTowerError::ItemMustBeInField
         }
 
-        let (
-            _,
-            _,
-            _,
-            new_level_lengths,
-        ) = LazyTowerHashChainData::find_lowest_non_full_level_then_inc(self.level_lengths)
+        let (_, _, _, new_level_lengths) = LazyTower::find_lowest_non_full_level_then_inc(
+            self.level_lengths,
+        )
         let mut carry = item
         let mut level: usize = 0
 
@@ -161,8 +174,8 @@ impl LazyTowerHashChainData {
     }
 }
 
-fn lazytower_after_150() -> LazyTowerHashChainData {
-    let mut tower = LazyTowerHashChainData::empty()
+fn lazytower_after_150() -> LazyTower {
+    let mut tower = LazyTower::empty()
     let mut i: usize = 0
     while i < 150 {
         let err = tower.add(i as u256)
@@ -356,7 +369,7 @@ fn test_lazytower_find_lowest_non_full_level_matches_shift_tower() {
             is_head,
             is_top,
             next_level_lengths,
-        ) = LazyTowerHashChainData::find_lowest_non_full_level_then_inc(level_lengths)
+        ) = LazyTower::find_lowest_non_full_level_then_inc(level_lengths)
         assert(level == expected_level)
         assert(is_head == expected_is_head)
         assert(is_top == expected_is_top)
@@ -442,7 +455,7 @@ fn test_lazytower_vectors_match_solidity() {
 
 #[test]
 fn test_lazytower_rejects_out_of_field_values() {
-    let mut tower = LazyTowerHashChainData::empty()
+    let mut tower = LazyTower::empty()
     let err = tower.add(SNARK_SCALAR_FIELD - 1)
     assert(err.code() == LazyTowerError::None.code())
 
