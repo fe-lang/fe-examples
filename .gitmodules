@@ -1,0 +1,15 @@
+[submodule "rosetta"]
+	path = rosetta
+	url = https://github.com/fe-lang/rosetta.git
+[submodule "bountiful"]
+	path = bountiful
+	url = https://github.com/fe-lang/bountiful.git
+[submodule "fe-workbook"]
+	path = fe-workbook
+	url = https://github.com/fe-lang/fe-workbook.git
+[submodule "community/threshold-elgamal-voting-fe"]
+	path = community/threshold-elgamal-voting-fe
+	url = https://github.com/g-r-a-n-t/threshold-elgamal-voting-fe.git
+[submodule "community/chz"]
+	path = community/chz
+	url = https://github.com/g-r-a-n-t/chz.git
