@@ -1,2 +1,0 @@
-/// Stateless Merkle proof helpers.
-pub use merkle

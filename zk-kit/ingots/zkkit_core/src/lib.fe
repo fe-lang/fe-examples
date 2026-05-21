@@ -1,3 +1,0 @@
-/// Core constants and field arithmetic helpers for zk-kit primitives.
-pub use common
-pub use field

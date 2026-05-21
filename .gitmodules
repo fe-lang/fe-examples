@@ -13,3 +13,6 @@
 [submodule "community/chz"]
 	path = community/chz
 	url = https://github.com/g-r-a-n-t/chz.git
+[submodule "community/zk-kit.fe"]
+	path = community/zk-kit.fe
+	url = https://github.com/g-r-a-n-t/zk-kit.fe

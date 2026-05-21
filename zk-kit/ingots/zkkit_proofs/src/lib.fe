@@ -1,3 +1,0 @@
-/// Proof-system primitives (BN254, Groth16 verifier helper).
-pub use bn254
-pub use groth16
